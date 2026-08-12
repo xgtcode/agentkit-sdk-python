@@ -20,6 +20,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -249,6 +250,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         enable_auth: bool = False,
         identity: IdentityRuntimeConfig | RuntimeIdentity | None = None,
         identity_health_routes: tuple[str, ...] = (),
+        public_url: str | None = None,
     ) -> None:
         super().__init__()
         self._enable_auth_enabled = enable_auth
@@ -292,6 +294,21 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             credential_service=_credential_service,
         )
         to_a2a_kwargs: dict[str, Any] = {"agent": root_agent, "runner": runner}
+        if public_url is not None:
+            parsed_url = urlparse(public_url)
+            if not parsed_url.scheme:
+                raise ValueError(
+                    "public_url must include a scheme, e.g. 'https://example.com'"
+                )
+            if not parsed_url.hostname:
+                raise ValueError(
+                    "public_url must include a hostname, e.g. 'https://example.com'"
+                )
+            to_a2a_kwargs["protocol"] = parsed_url.scheme
+            to_a2a_kwargs["host"] = parsed_url.hostname
+            to_a2a_kwargs["port"] = parsed_url.port or (
+                443 if parsed_url.scheme == "https" else 80
+            )
         if enable_auth:
             to_a2a_kwargs["agent_executor_factory"] = (
                 build_a2a_inbound_auth_executor_factory(
