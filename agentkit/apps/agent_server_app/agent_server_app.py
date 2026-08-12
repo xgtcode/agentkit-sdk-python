@@ -20,6 +20,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -142,6 +143,39 @@ def _create_a2a_runner(
     )
 
 
+_DEFAULT_PUBLIC_PORT_BY_SCHEME = {"https": 443, "http": 80}
+
+
+def _resolve_public_url_components(
+    public_url: str,
+) -> tuple[str, str, int]:
+    """Parse a caller-supplied public URL into A2A ``to_a2a`` components.
+
+    ``to_a2a`` builds the ``AgentCard.url`` from ``protocol://host:port`` and
+    does not accept an arbitrary URL or path. This helper normalises a
+    user-facing ``public_url`` (e.g. ``"https://agents.example.com:8443"``)
+    into the ``(protocol, host, port)`` tuple ``to_a2a`` expects.
+
+    When the URL omits an explicit port, the scheme's default port is used so
+    the resulting ``AgentCard.url`` is still a complete, resolvable endpoint.
+
+    Raises:
+        ValueError: if ``public_url`` has no scheme or no host.
+    """
+    parsed = urlparse(public_url)
+    protocol = (parsed.scheme or "").lower()
+    host = parsed.hostname
+    if not protocol or not host:
+        raise ValueError(
+            "public_url must include a scheme and host "
+            f"(e.g. 'https://agents.example.com:8443'); got {public_url!r}"
+        )
+    port = parsed.port
+    if port is None:
+        port = _DEFAULT_PUBLIC_PORT_BY_SCHEME.get(protocol, 80)
+    return protocol, host, port
+
+
 async def _call_lifecycle_handler(handler: Any) -> None:
     result = handler()
     if inspect.isawaitable(result):
@@ -235,6 +269,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         allow_origin_regex: str | list[str] | None = None,
         identity: IdentityRuntimeConfig | RuntimeIdentity | None = None,
         identity_health_routes: tuple[str, ...] = (),
+        public_url: str | None = None,
     ) -> None:
         super().__init__()
 
@@ -274,7 +309,17 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             artifact_service=_artifact_service,
             credential_service=_credential_service,
         )
-        _a2a_server_app = to_a2a(agent=root_agent, runner=runner)
+        self.public_url = public_url
+
+        to_a2a_kwargs: dict[str, Any] = {"agent": root_agent, "runner": runner}
+        if public_url is not None:
+            a2a_protocol, a2a_host, a2a_port = _resolve_public_url_components(
+                public_url
+            )
+            to_a2a_kwargs.update(
+                host=a2a_host, port=a2a_port, protocol=a2a_protocol
+            )
+        _a2a_server_app = to_a2a(**to_a2a_kwargs)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
